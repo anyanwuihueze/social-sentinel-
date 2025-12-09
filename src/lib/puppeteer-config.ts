@@ -9,10 +9,11 @@ export const puppeteerConfig: PuppeteerLaunchOptions = {
     '--disable-accelerated-2d-canvas',
     '--no-first-run',
     '--no-zygote',
-    '--single-process', // This is for containers
+    '--single-process',
     '--disable-gpu',
-    process.env.PROXY_URL ? `--proxy-server=${process.env.PROXY_URL}` : '',
-  ].filter(Boolean),
+    // dynamic proxy injection
+    ...(process.env.PROXY_URL ? [`--proxy-server=${process.env.PROXY_URL}`] : []),
+  ],
   defaultViewport: {
     width: 1280,
     height: 720,
