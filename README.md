@@ -63,3 +63,4 @@ This application is configured for deployment on [Vercel](https://vercel.com/).
 3.  Vercel will automatically detect the Next.js project and configure the build settings.
 4.  Add your environment variables in the Vercel project settings.
 5.  Deploy!
+# social-sentinel-
