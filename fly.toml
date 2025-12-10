@@ -1,0 +1,18 @@
+app = "social-agents-1765342327"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3001"
+
+[[services]]
+  internal_port = 3001
+  protocol = "tcp"
+  auto_stop_machines = false   # keep alive for QR scan
+  auto_start_machines = true
+  min_machines_running = 1
+  [[services.ports]]
+    port = 443
+    handlers = ["http", "tls"]
