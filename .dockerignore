@@ -1,0 +1,29 @@
+# Exclude EVERYTHING first
+*
+
+# Then re-include ONLY what we need
+!Dockerfile
+!fly.toml
+!railway-worker.js
+!package.json
+!package-lock.json
+!src/lib/telegram-scraper.js
+!src/lib/tiktok-scraper.js
+!src/lib/puppeteer-config.js
+!src/lib/supabaseClient.js
+!src/lib/sentiment.js
+!src/lib/supabaseClient.ts
+!src/lib/sentiment.ts
+!src/lib/puppeteer-config.ts
+
+# Exclude all other files
+.git
+node_modules
+.next
+*.log
+*.tar.gz
+*.zip
+public/
+dist/
+coverage/
+tests/

@@ -1,0 +1,46 @@
+import { NextResponse } from 'next/server';
+import { ProxyAgent } from 'undici';
+import { fetch as undiciFetch } from 'undici';
+
+export async function POST(req: Request) {
+  const { proxyUrl } = await req.json();
+  
+  if (!proxyUrl) {
+    return NextResponse.json({ status: 'disconnected', ip: null });
+  }
+  
+  try {
+    const proxyAgent = new ProxyAgent(proxyUrl);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10-second timeout
+
+    const res = await undiciFetch('https://api.ipify.org?format=json', {
+      dispatcher: proxyAgent,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    
+    const data = await res.json() as { ip: string };
+    
+    return NextResponse.json({ 
+      status: 'ok', 
+      ip: data.ip, 
+      proxyUrl,
+      expectedProxyIp: '45.151.89.164',
+      proxyWorking: data.ip === '45.151.89.164'
+    });
+  } catch (e: any) {
+    // Key improvement: Check for connection refusal
+    const isConnectionRefused = e.message.includes('ECONNREFUSED') || e.cause?.code === 'ECONNREFUSED';
+    const errorMsg = isConnectionRefused 
+      ? `Cannot connect to proxy server at ${proxyUrl}. The server is down or the IP/port is incorrect.`
+      : e.message;
+
+    return NextResponse.json({ 
+      status: 'fail', 
+      error: errorMsg,
+      errorDetails: e.cause?.message || 'Unknown error',
+      proxyUrl 
+    }, { status: 500 });
+  }
+}

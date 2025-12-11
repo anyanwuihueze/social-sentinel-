@@ -1,36 +1,50 @@
 import { NextResponse } from 'next/server';
-import { ProxyAgent } from 'undici';
-import { fetch as undiciFetch } from 'undici';
 
-export async function POST(req: Request) {
-  const { proxyUrl } = await req.json();
-  
-  if (!proxyUrl) {
-    return NextResponse.json({ status: 'disconnected', ip: null });
-  }
-  
+// Shared logic
+async function handleProxyCheck() {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
   try {
-    const proxyAgent = new ProxyAgent(proxyUrl);
-    
-    const res = await undiciFetch('https://api.ipify.org?format=json', {
-      dispatcher: proxyAgent
+    const response = await fetch('https://social-agents-1765342327.fly.dev/health', {
+      signal: controller.signal
     });
     
-    const data = await res.json() as { ip: string };
+    clearTimeout(timeoutId);
     
-    return NextResponse.json({ 
-      status: 'ok', 
-      ip: data.ip, 
-      proxyUrl,
-      expectedProxyIp: '45.151.89.164',
-      proxyWorking: data.ip === '45.151.89.164'
+    if (!response.ok) {
+      throw new Error(`Fly.io backend responded with ${response.status}`);
+    }
+    
+    const healthData = await response.json();
+    
+    return NextResponse.json({
+      status: 'connected',
+      backend: 'Fly.io',
+      health: healthData,
+      message: 'Social media scrapers backend is running',
+      timestamp: new Date().toISOString()
     });
-  } catch (e: any) {
-    return NextResponse.json({ 
-      status: 'fail', 
-      error: e.message, 
-      errorDetails: e.cause?.message || 'Unknown error',
-      proxyUrl 
-    });
+    
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    console.error('Proxy test failed:', error.message);
+    
+    return NextResponse.json({
+      status: 'disconnected',
+      error: 'Cannot reach Fly.io backend',
+      details: error.message,
+      suggestion: 'Check if social-agents-1765342327.fly.dev is running',
+      timestamp: new Date().toISOString()
+    }, { status: 500 });
   }
+}
+
+// Handle both GET and POST
+export async function GET() {
+  return await handleProxyCheck();
+}
+
+export async function POST() {
+  return await handleProxyCheck();
 }

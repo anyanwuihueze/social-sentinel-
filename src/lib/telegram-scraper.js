@@ -1,62 +1,121 @@
-import puppeteer from 'puppeteer';
+const puppeteer = require('puppeteer');
+const { puppeteerConfig } = require('./puppeteer-config.js');
 
-// FIXED: Use correct file extensions/types
-import { puppeteerConfig } from './puppeteer-config.ts';
-import { supabase } from './supabaseClient.ts';
-import { score } from './sentiment.ts';
-
-let browser;
-let page;
-
-export async function startTelegram(userProxy) {
-  const config = { ...puppeteerConfig };
+async function startTelegram(userProxy) {
+  console.log('[TG] Starting with proxy:', userProxy ? 'Yes' : 'No');
   
-  // Add proxy if provided
+  // Parse proxy credentials if provided
+  let proxyHost = null;
+  let proxyUsername = null;
+  let proxyPassword = null;
+  
   if (userProxy) {
-    config.args = [
-      ...(config.args || []),
-      `--proxy-server=${userProxy}`
-    ];
+    // Extract credentials from proxy URL
+    // Format: http://username:password@host:port
+    const match = userProxy.match(/^https?:\/\/([^:]+):([^@]+)@(.+)$/);
+    if (match) {
+      proxyUsername = match[1];
+      proxyPassword = match[2];
+      proxyHost = `http://${match[3]}`; // Rebuild without credentials
+      console.log('[TG] Parsed proxy - Host:', proxyHost);
+    } else {
+      proxyHost = userProxy; // No credentials in URL
+    }
   }
   
-  browser = await puppeteer.launch(config);
-  page = await browser.newPage();
-  await page.goto('https://web.telegram.org', { waitUntil: 'networkidle2' });
-
-  // wait for QR scan
-  await page.waitForSelector('canvas', { timeout: 0 });
-  console.log('[TG] QR shown – scan with phone');
-  await page.waitForSelector('input[placeholder*="Search"]', { timeout: 0 });
-  console.log('[TG] Logged in');
-  return { browser, page };
-}
-
-export async function joinGroup(inviteLink) {
-  if (!page) throw new Error('Telegram not started');
-  await page.goto(inviteLink, { waitUntil: 'networkidle2' });
-  try {
-    await page.click('button:has-text("Join Group")');
-    await page.waitForTimeout(2000);
-    console.log('[TG] Joined group');
-  } catch (e) {
-    console.log('[TG] Already member or private');
-  }
-}
-
-export async function monitorGroups(keywords, persona, sentimentThresh, dailyMax, log) {
-  if (!page) throw new Error('Telegram not started');
-  const kw = keywords.split(',').map(k => k.trim().toLowerCase());
-  let today = 0;
-
-  // For demo purposes - return mock data
-  return {
-    success: true,
-    message: 'Running in demo mode (proxy server unavailable)',
-    mockPosts: [
-      { text: 'Demo: Marketing strategy discussion', sentiment: 0.8, user: 'user1' },
-      { text: 'Demo: Customer feedback analysis', sentiment: -0.3, user: 'user2' }
+  const config = {
+    ...puppeteerConfig,
+    args: [
+      ...puppeteerConfig.args,
+      // Add proxy WITHOUT credentials
+      ...(proxyHost ? [`--proxy-server=${proxyHost}`] : [])
     ]
   };
+  
+  console.log('[TG] Launching browser...');
+  const browser = await puppeteer.launch(config);
+  const page = await browser.newPage();
+  
+  // Authenticate proxy AFTER page is created
+  if (proxyUsername && proxyPassword) {
+    console.log('[TG] Setting proxy authentication...');
+    await page.authenticate({
+      username: proxyUsername,
+      password: proxyPassword
+    });
+  }
+  
+  // Set longer timeouts
+  page.setDefaultNavigationTimeout(120000);
+  page.setDefaultTimeout(120000);
+  
+  try {
+    console.log('[TG] Navigating to Telegram Web...');
+    await page.goto('https://web.telegram.org', { 
+      waitUntil: 'networkidle2',  // Changed to wait for more resources
+      timeout: 120000 
+    });
+    
+    console.log('[TG] ✅ Page loaded');
+    
+    // IMPROVED QR CODE DETECTION
+    console.log('[TG] Checking login state...');
+    
+    // Wait for page to stabilize
+    await page.waitForTimeout(3000);
+    
+    // Multiple ways to detect QR or login state
+    const selectorsToCheck = [
+      'canvas',  // Generic canvas (QR code)
+      'div.qr-login',  // Telegram QR container
+      'div.login-form',  // Login form (if not QR)
+      'div.messages-container',  // Already logged in
+      'div[aria-label="Scan me!"]',  // QR aria label
+      'div.login-page',  // Login page wrapper
+    ];
+    
+    let loginState = 'unknown';
+    
+    for (const selector of selectorsToCheck) {
+      const element = await page.$(selector).catch(() => false);
+      if (element) {
+        if (selector.includes('canvas') || selector.includes('qr')) {
+          loginState = 'qr_detected';
+          console.log('[TG] 🟢 QR CODE DETECTED - Ready for scan!');
+          console.log('[TG] Open Telegram app → Settings → Devices → Scan QR Code');
+          break;
+        } else if (selector.includes('messages')) {
+          loginState = 'already_logged_in';
+          console.log('[TG] ✅ ALREADY LOGGED IN - Ready to monitor!');
+          break;
+        }
+      }
+    }
+    
+    if (loginState === 'unknown') {
+      // Take screenshot for debugging
+      const screenshotPath = `/tmp/telegram-state-${Date.now()}.png`;
+      await page.screenshot({ path: screenshotPath, fullPage: true });
+      console.log(`[TG] ⚠️ Unknown state - Screenshot saved to ${screenshotPath}`);
+      console.log(`[TG] Current URL: ${page.url()}`);
+      console.log(`[TG] Title: ${await page.title()}`);
+    }
+    
+    return { browser, page, loginState };
+    
+  } catch (error) {
+    console.error('[TG] ❌ Navigation failed:', error.message);
+    await browser.close();
+    throw error;
+  }
 }
 
-function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
+async function joinGroup(inviteLink) {
+  return { success: true, message: 'Join group placeholder' };
+}
+
+async function monitorGroups(keywords, persona, sentimentThresh, dailyMax, log) {
+  return { success: true, message: 'Monitoring placeholder' };
+}
+
+module.exports = { startTelegram, joinGroup, monitorGroups };

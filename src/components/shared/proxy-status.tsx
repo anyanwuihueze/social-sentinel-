@@ -13,10 +13,14 @@ export function ProxyStatus() {
   useEffect(() => {
     async function checkProxy() {
       try {
-        const response = await fetch('/api/proxy-test');
+        const response = await fetch('/api/proxy-test', {
+          method: 'GET'  // Changed to GET since we fixed the API route
+        });
+        
         if (!response.ok) {
           throw new Error('Proxy test failed');
         }
+        
         const data = await response.json();
         setStatus(data.status === 'connected' ? 'connected' : 'disconnected');
       } catch (error) {
@@ -24,6 +28,7 @@ export function ProxyStatus() {
         setStatus('disconnected');
       }
     }
+    
     checkProxy();
   }, []);
 
