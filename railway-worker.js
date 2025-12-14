@@ -30,103 +30,6 @@ let agentConfig = {
   leadsGenerated: 0
 };
 
-// ========== API ENDPOINTS ==========
-
-app.get('/health', (req, res) => {
-  res.json({
-    ok: true,
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    telegram: telegramStatus,
-    config: agentConfig
-  });
-});
-
-app.get('/start', async (req, res) => {
-  if (pythonProcess) {
-    return res.json({ success: false, message: 'Already running', status: telegramStatus });
-  }
-  startTelegramBridge();
-  res.json({ success: true, message: 'Starting agent', status: 'connecting' });
-});
-
-app.get('/stop', (req, res) => {
-  if (pythonProcess) {
-    pythonProcess.kill();
-    pythonProcess = null;
-    telegramStatus = 'stopped';
-  }
-  res.json({ success: true, message: 'Agent stopped' });
-});
-
-app.post('/config', (req, res) => {
-  if (req.body.keywords) agentConfig.keywords = req.body.keywords;
-  if (req.body.persona) agentConfig.persona = req.body.persona;
-  if (req.body.sentimentThreshold !== undefined) agentConfig.sentimentThreshold = req.body.sentimentThreshold;
-  if (req.body.maxReplies) agentConfig.maxRepliesPerHour = req.body.maxReplies;
-  if (req.body.aiEnabled !== undefined) agentConfig.aiEnabled = req.body.aiEnabled;
-  
-  console.log('✅ Config updated:', agentConfig);
-  res.json({ success: true, config: agentConfig });
-});
-
-app.get('/config', (req, res) => {
-  res.json({ success: true, config: agentConfig });
-});
-
-app.get('/stats', (req, res) => {
-  res.json({
-    success: true,
-    stats: {
-      status: telegramStatus,
-      totalMessages: agentConfig.totalMessages,
-      totalReplies: agentConfig.totalReplies,
-      leadsGenerated: agentConfig.leadsGenerated,
-      repliesThisHour: agentConfig.replyCount,
-      maxReplies: agentConfig.maxRepliesPerHour,
-      persona: agentConfig.persona,
-      aiEnabled: agentConfig.aiEnabled
-    }
-  });
-});
-
-app.get('/messages', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 50;
-    const { data, error } = await supabase
-      .from('telegram_messages')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(limit);
-    
-    if (error) throw error;
-    res.json({ success: true, messages: data });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-app.get('/leads', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('telegram_leads')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(100);
-    
-    if (error) throw error;
-    res.json({ success: true, leads: data });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-app.post('/test-ai', async (req, res) => {
-  const { text, persona } = req.body;
-  const reply = await generateAIReply(text, persona || agentConfig.persona);
-  res.json({ success: true, reply });
-});
-
 // ========== TELEGRAM BRIDGE ==========
 
 function startTelegramBridge() {
@@ -169,7 +72,7 @@ function startTelegramBridge() {
   });
 
   pythonProcess.on('exit', (code) => {
-    console.error(`Python exited: ${code}`);
+    console.log(`Python process exited with code ${code}`);
     telegramStatus = 'stopped';
     pythonProcess = null;
   });
@@ -185,44 +88,35 @@ async function handleMessage(event) {
 
   console.log(`📨 Keyword detected: "${event.text.substring(0, 60)}..."`);
 
-  // Save to Supabase
   await saveMessage(event);
 
-  // Analyze sentiment
   const sentimentScore = analyzeSentiment(event.text);
   
-  // Only reply if frustrated or needs help
   if (sentimentScore > agentConfig.sentimentThreshold) {
     console.log(`⏭️ Skipped (sentiment ${sentimentScore} > ${agentConfig.sentimentThreshold})`);
     return;
   }
 
-  // Rate limiting
   if (agentConfig.replyCount >= agentConfig.maxRepliesPerHour) {
     console.log('⏸️ Rate limit reached');
     return;
   }
 
-  // Check if this is a lead
   const isLead = isHighIntentLead(event.text, sentimentScore);
   if (isLead) {
     await saveLead(event, sentimentScore);
     agentConfig.leadsGenerated++;
   }
 
-  // Generate AI reply
   const reply = await generateAIReply(event.text, agentConfig.persona);
   
-  // Send reply
   sendMessage(event.chat_id, reply);
   
-  // Save reply
   await saveReply(event, reply, sentimentScore);
   
   agentConfig.replyCount++;
   agentConfig.totalReplies++;
   
-  // Reset counter after 1 hour
   setTimeout(() => {
     agentConfig.replyCount = Math.max(0, agentConfig.replyCount - 1);
   }, 60 * 60 * 1000);
@@ -373,9 +267,178 @@ function sendMessage(chatId, text) {
   pythonProcess.stdin.write(cmd + '\n');
 }
 
+// ========== API ENDPOINTS ==========
+
+app.get('/health', (req, res) => {
+  res.json({
+    ok: true,
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    telegram: telegramStatus,
+    config: agentConfig
+  });
+});
+
+app.get('/start', async (req, res) => {
+  if (pythonProcess) {
+    return res.json({ success: false, message: 'Already running', status: telegramStatus });
+  }
+  startTelegramBridge();
+  res.json({ success: true, message: 'Starting agent', status: 'connecting' });
+});
+
+app.get('/stop', (req, res) => {
+  if (pythonProcess) {
+    pythonProcess.kill();
+    pythonProcess = null;
+    telegramStatus = 'stopped';
+  }
+  res.json({ success: true, message: 'Agent stopped' });
+});
+
+app.post('/config', (req, res) => {
+  if (req.body.keywords) agentConfig.keywords = req.body.keywords;
+  if (req.body.persona) agentConfig.persona = req.body.persona;
+  if (req.body.sentimentThreshold !== undefined) agentConfig.sentimentThreshold = req.body.sentimentThreshold;
+  if (req.body.maxReplies) agentConfig.maxRepliesPerHour = req.body.maxReplies;
+  if (req.body.aiEnabled !== undefined) agentConfig.aiEnabled = req.body.aiEnabled;
+  
+  console.log('✅ Config updated:', agentConfig);
+  res.json({ success: true, config: agentConfig });
+});
+
+app.get('/config', (req, res) => {
+  res.json({ success: true, config: agentConfig });
+});
+
+app.get('/stats', (req, res) => {
+  res.json({
+    success: true,
+    stats: {
+      status: telegramStatus,
+      totalMessages: agentConfig.totalMessages,
+      totalReplies: agentConfig.totalReplies,
+      leadsGenerated: agentConfig.leadsGenerated,
+      repliesThisHour: agentConfig.replyCount,
+      maxReplies: agentConfig.maxRepliesPerHour,
+      persona: agentConfig.persona,
+      aiEnabled: agentConfig.aiEnabled
+    }
+  });
+});
+
+app.get('/messages', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const { data, error } = await supabase
+      .from('telegram_messages')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    
+    if (error) throw error;
+    res.json({ success: true, messages: data });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+app.get('/leads', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('telegram_leads')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+    
+    if (error) throw error;
+    res.json({ success: true, leads: data });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+app.post('/test-ai', async (req, res) => {
+  const { text, persona } = req.body;
+  const reply = await generateAIReply(text, persona || agentConfig.persona);
+  res.json({ success: true, reply });
+});
+
+// ========== KEYWORDS API ==========
+
+app.get('/api/keywords', (req, res) => {
+  res.json({
+    success: true,
+    keywords: agentConfig.keywords,
+    count: agentConfig.keywords.length
+  });
+});
+
+app.post('/api/keywords', (req, res) => {
+  const { keyword } = req.body;
+  
+  if (!keyword || typeof keyword !== 'string') {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Keyword must be a non-empty string' 
+    });
+  }
+  
+  const normalizedKeyword = keyword.toLowerCase().trim();
+  
+  if (!agentConfig.keywords.includes(normalizedKeyword)) {
+    agentConfig.keywords.push(normalizedKeyword);
+    console.log(`✅ Keyword added: "${normalizedKeyword}"`);
+  }
+  
+  res.json({
+    success: true,
+    keyword: normalizedKeyword,
+    keywords: agentConfig.keywords,
+    message: `Keyword "${normalizedKeyword}" added successfully`
+  });
+});
+
+app.delete('/api/keywords/:keyword', (req, res) => {
+  const keyword = req.params.keyword.toLowerCase();
+  
+  const index = agentConfig.keywords.indexOf(keyword);
+  if (index > -1) {
+    agentConfig.keywords.splice(index, 1);
+    console.log(`🗑️ Keyword removed: "${keyword}"`);
+    
+    res.json({
+      success: true,
+      keyword: keyword,
+      keywords: agentConfig.keywords,
+      message: `Keyword "${keyword}" removed successfully`
+    });
+  } else {
+    res.status(404).json({
+      success: false,
+      error: `Keyword "${keyword}" not found`
+    });
+  }
+});
+
+app.delete('/api/keywords', (req, res) => {
+  const oldCount = agentConfig.keywords.length;
+  agentConfig.keywords = ['visa'];
+  console.log(`🧹 Cleared ${oldCount - 1} keywords, kept default "visa"`);
+  
+  res.json({
+    success: true,
+    keywords: agentConfig.keywords,
+    message: 'Cleared all keywords, kept default "visa"'
+  });
+});
+
+// ========== SERVER STARTUP ==========
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Backend running on port ${PORT}`);
-  console.log(`🌐 API: https://social-agents-1765342327.fly.dev`);
+  console.log(`🌐 Health: https://social-agents-1765342327.fly.dev/health`);
+  console.log(`🔑 Keywords API: https://social-agents-1765342327.fly.dev/api/keywords`);
   
   setTimeout(() => {
     console.log('Auto-starting Telegram...');
