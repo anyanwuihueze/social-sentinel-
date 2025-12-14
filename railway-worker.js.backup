@@ -20,8 +20,8 @@ let telegramStatus = 'stopped';
 let pythonProcess = null;
 let agentConfig = {
   keywords: ['visa', 'interview', 'appointment', 'embassy', 'denied', 'rejected', 'travel', 'funds'],
-  persona: 'peer',
-  sentimentThreshold: -0.3,
+  persona: 'peer', // peer, expert, friendly
+  sentimentThreshold: -0.3, // Only reply if sentiment is below this (frustrated users)
   maxRepliesPerHour: 10,
   replyCount: 0,
   aiEnabled: true,
@@ -229,6 +229,7 @@ async function handleMessage(event) {
 }
 
 function analyzeSentiment(text) {
+  // Simple sentiment analysis (you can enhance this)
   const negativeWords = ['denied', 'rejected', 'frustrated', 'confused', 'stuck', 'failed', 'help', 'problem', 'issue', 'difficult', 'hard'];
   const positiveWords = ['approved', 'success', 'got it', 'thanks', 'helpful', 'great'];
   

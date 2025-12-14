@@ -27,3 +27,4 @@ public/
 dist/
 coverage/
 tests/
+!telegram-listener.py
