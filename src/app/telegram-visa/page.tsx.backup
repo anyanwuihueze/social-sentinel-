@@ -126,9 +126,8 @@ export default function TelegramVisaPage() {
         title: 'Connection Error',
         description: 'Could not add keyword to server',
       });
-    } finally {
-      setLoadingAdd(false);
     }
+    setLoadingAdd(false);
   };
 
   // ===== NEW: Remove keyword with backend API =====
@@ -160,9 +159,8 @@ export default function TelegramVisaPage() {
         title: 'Connection Error',
         description: 'Could not remove keyword from server',
       });
-    } finally {
-      setLoadingRemove(null);
     }
+    setLoadingRemove(null);
   };
 
   // ===== UPDATED: Start monitor with current keywords =====
@@ -287,11 +285,16 @@ export default function TelegramVisaPage() {
                 <p className="text-sm font-medium text-muted-foreground">Keywords</p>
                 <p className="text-2xl font-bold">{keywords.length}</p>
               </div>
-              <RefreshCw 
-                className="h-8 w-8 text-muted-foreground cursor-pointer hover:text-primary transition-colors"
+              <Button
+                variant="ghost"
+                size="sm"
+                className="p-1"
                 onClick={handleRefreshKeywords}
                 title="Refresh keywords"
-              />
+              >
+                <RefreshCw className="h-8 w-8 text-muted-foreground hover:text-primary transition-colors" />
+                <span className="sr-only">Refresh keywords</span>
+              </Button>
             </div>
           </CardContent>
         </Card>

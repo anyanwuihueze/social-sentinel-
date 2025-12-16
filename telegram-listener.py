@@ -1,12 +1,29 @@
 import os, sys, json, asyncio
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+import aiohttp
 
 API_ID = 36200987
 API_HASH = "062400eb954dcb12839fc4074eb2a1f7"
 SESSION = os.getenv('TELEGRAM_SESSION_STRING', '')
 
 client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
+
+async def update_group_stats(chat_id, stats_data):
+    """Update group statistics in the backend"""
+    try:
+        api_url = os.getenv('API_BASE_URL', 'http://localhost:3001')
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{api_url}/api/groups/{chat_id}/stats",
+                json=stats_data,
+                timeout=5
+            ) as response:
+                if response.status != 200:
+                    print(f"Failed to update stats: {response.status}", file=sys.stderr)
+    except Exception as e:
+        print(f"Error updating stats: {e}", file=sys.stderr)
 
 async def main():
     try:
@@ -15,6 +32,10 @@ async def main():
         
         @client.on(events.NewMessage)
         async def handler(event):
+            # Only process group messages
+            if event.chat_id >= 0:
+                return  # Skip private chats
+            
             # Get sender info
             sender_username = None
             try:
@@ -32,6 +53,14 @@ async def main():
                 'date': event.date.isoformat()
             }
             print(json.dumps(msg), flush=True)
+            
+            # Update group stats for message received
+            try:
+                await update_group_stats(str(event.chat_id), {
+                    'messages_received': 1
+                })
+            except:
+                pass
         
         async def stdin_reader():
             loop = asyncio.get_event_loop()

@@ -6,7 +6,7 @@ import {
   Plus, PlayCircle, PauseCircle, RefreshCw, BarChart3, Send,
   AlertCircle, CheckCircle, XCircle, Search, Brain, Sparkles, Bot,
   Link, Download, ExternalLink, Calendar, Hash, User, Flame,
-  ThermometerSun, Snowflake, MoreVertical, ChevronDown, Trash2
+  ThermometerSun, Snowflake, MoreVertical, ChevronDown
 } from 'lucide-react';
 
 // Import components
@@ -134,8 +134,8 @@ export default function TelegramVisaAgent() {
       } else {
         setAiTestResult('Error: Failed to get AI response');
       }
-    } catch (error: any) {
-      setAiTestResult('Error: ' + (error.message || 'Unknown error'));
+    } catch (error) {
+      setAiTestResult('Error: ' + error.message);
     }
   };
 

@@ -4,11 +4,20 @@ const readline = require('readline');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 
+// ========== ENVIRONMENT FIX ==========
+// Force Python virtual environment path
+process.env.PATH = '/opt/venv/bin:' + process.env.PATH;
+// =====================================
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+// Initialize Group Manager
+const GroupManager = require('./group-manager');
+const groupManager = new GroupManager();
 
 // Supabase client
 const supabase = createClient(
@@ -27,7 +36,8 @@ let agentConfig = {
   aiEnabled: true,
   totalMessages: 0,
   totalReplies: 0,
-  leadsGenerated: 0
+  leadsGenerated: 0,
+  monitoredGroups: []
 };
 
 // ========== TELEGRAM BRIDGE ==========
@@ -37,7 +47,7 @@ function startTelegramBridge() {
   telegramStatus = 'connecting';
   
   pythonProcess = spawn('/opt/venv/bin/python3', ['telegram-listener.py'], {
-    env: process.env
+    env: { ...process.env, PATH: '/opt/venv/bin:' + process.env.PATH }
   });
 
   const rl = readline.createInterface({
@@ -79,47 +89,82 @@ function startTelegramBridge() {
 }
 
 async function handleMessage(event) {
-  agentConfig.totalMessages++;
-  
-  const text = (event.text || '').toLowerCase();
-  const hasKeyword = agentConfig.keywords.some(k => text.includes(k.toLowerCase()));
-  
-  if (!hasKeyword) return;
+  try {
+    // Check if group is monitored and active
+    if (event.chat_id < 0) { // Negative IDs are groups
+      const { data: group } = await supabase
+        .from('monitored_groups')
+        .select('active')
+        .eq('group_id', event.chat_id.toString())
+        .eq('active', true)
+        .maybeSingle();
 
-  console.log(`📨 Keyword detected: "${event.text.substring(0, 60)}..."`);
+      if (!group) {
+        console.log(`Group ${event.chat_id} not monitored or inactive, skipping...`);
+        return;
+      }
+    }
 
-  await saveMessage(event);
+    agentConfig.totalMessages++;
+    
+    const text = (event.text || '').toLowerCase();
+    const hasKeyword = agentConfig.keywords.some(k => text.includes(k.toLowerCase()));
+    
+    if (!hasKeyword) return;
 
-  const sentimentScore = analyzeSentiment(event.text);
-  
-  if (sentimentScore > agentConfig.sentimentThreshold) {
-    console.log(`⏭️ Skipped (sentiment ${sentimentScore} > ${agentConfig.sentimentThreshold})`);
-    return;
+    console.log(`📨 Keyword detected in group ${event.chat_id}: "${event.text.substring(0, 60)}..."`);
+
+    await saveMessage(event);
+
+    const sentimentScore = analyzeSentiment(event.text);
+    
+    if (sentimentScore > agentConfig.sentimentThreshold) {
+      console.log(`⏭️ Skipped (sentiment ${sentimentScore} > ${agentConfig.sentimentThreshold})`);
+      return;
+    }
+
+    if (agentConfig.replyCount >= agentConfig.maxRepliesPerHour) {
+      console.log('⏸️ Rate limit reached');
+      return;
+    }
+
+    const isLead = isHighIntentLead(event.text, sentimentScore);
+    if (isLead) {
+      await saveLead(event, sentimentScore);
+      agentConfig.leadsGenerated++;
+    }
+
+    const reply = await generateAIReply(event.text, agentConfig.persona);
+    
+    sendMessage(event.chat_id, reply);
+    
+    await saveReply(event, reply, sentimentScore);
+    
+    agentConfig.replyCount++;
+    agentConfig.totalReplies++;
+    
+    // Update group stats
+    if (event.chat_id < 0) {
+      const statsUpdate = {
+        messages_received: 1,
+        messages_replied: 1,
+        leads_generated: isLead ? 1 : 0
+      };
+      
+      try {
+        await groupManager.updateGroupStats(event.chat_id.toString(), statsUpdate);
+      } catch (err) {
+        console.error('Failed to update group stats:', err.message);
+      }
+    }
+    
+    setTimeout(() => {
+      agentConfig.replyCount = Math.max(0, agentConfig.replyCount - 1);
+    }, 60 * 60 * 1000);
+    
+  } catch (error) {
+    console.error('Error handling message:', error);
   }
-
-  if (agentConfig.replyCount >= agentConfig.maxRepliesPerHour) {
-    console.log('⏸️ Rate limit reached');
-    return;
-  }
-
-  const isLead = isHighIntentLead(event.text, sentimentScore);
-  if (isLead) {
-    await saveLead(event, sentimentScore);
-    agentConfig.leadsGenerated++;
-  }
-
-  const reply = await generateAIReply(event.text, agentConfig.persona);
-  
-  sendMessage(event.chat_id, reply);
-  
-  await saveReply(event, reply, sentimentScore);
-  
-  agentConfig.replyCount++;
-  agentConfig.totalReplies++;
-  
-  setTimeout(() => {
-    agentConfig.replyCount = Math.max(0, agentConfig.replyCount - 1);
-  }, 60 * 60 * 1000);
 }
 
 function analyzeSentiment(text) {
@@ -224,7 +269,8 @@ async function saveMessage(event) {
       sender_username: event.sender_username || null,
       message_text: event.text,
       message_date: event.date,
-      has_keyword: true
+      has_keyword: true,
+      is_group: event.chat_id < 0
     });
   } catch (error) {
     console.error('Failed to save message:', error.message);
@@ -239,7 +285,8 @@ async function saveLead(event, sentiment) {
       sender_username: event.sender_username || null,
       message_text: event.text,
       sentiment_score: sentiment,
-      lead_score: sentiment < -0.6 ? 'hot' : sentiment < -0.3 ? 'warm' : 'cold'
+      lead_score: sentiment < -0.6 ? 'hot' : sentiment < -0.3 ? 'warm' : 'cold',
+      is_group: event.chat_id < 0
     });
     console.log('💡 Lead saved!');
   } catch (error) {
@@ -254,7 +301,8 @@ async function saveReply(event, replyText, sentiment) {
       original_message: event.text,
       reply_text: replyText,
       persona: agentConfig.persona,
-      sentiment_score: sentiment
+      sentiment_score: sentiment,
+      is_group: event.chat_id < 0
     });
   } catch (error) {
     console.error('Failed to save reply:', error.message);
@@ -311,20 +359,44 @@ app.get('/config', (req, res) => {
   res.json({ success: true, config: agentConfig });
 });
 
-app.get('/stats', (req, res) => {
-  res.json({
-    success: true,
-    stats: {
-      status: telegramStatus,
-      totalMessages: agentConfig.totalMessages,
-      totalReplies: agentConfig.totalReplies,
-      leadsGenerated: agentConfig.leadsGenerated,
-      repliesThisHour: agentConfig.replyCount,
-      maxReplies: agentConfig.maxRepliesPerHour,
-      persona: agentConfig.persona,
-      aiEnabled: agentConfig.aiEnabled
-    }
-  });
+app.get('/stats', async (req, res) => {
+  try {
+    // Get group count
+    const { count: groupCount } = await supabase
+      .from('monitored_groups')
+      .select('*', { count: 'exact', head: true })
+      .eq('active', true);
+    
+    res.json({
+      success: true,
+      stats: {
+        status: telegramStatus,
+        totalMessages: agentConfig.totalMessages,
+        totalReplies: agentConfig.totalReplies,
+        leadsGenerated: agentConfig.leadsGenerated,
+        repliesThisHour: agentConfig.replyCount,
+        maxReplies: agentConfig.maxRepliesPerHour,
+        persona: agentConfig.persona,
+        aiEnabled: agentConfig.aiEnabled,
+        activeGroups: groupCount || 0
+      }
+    });
+  } catch (error) {
+    res.json({
+      success: true,
+      stats: {
+        status: telegramStatus,
+        totalMessages: agentConfig.totalMessages,
+        totalReplies: agentConfig.totalReplies,
+        leadsGenerated: agentConfig.leadsGenerated,
+        repliesThisHour: agentConfig.replyCount,
+        maxReplies: agentConfig.maxRepliesPerHour,
+        persona: agentConfig.persona,
+        aiEnabled: agentConfig.aiEnabled,
+        activeGroups: 'N/A'
+      }
+    });
+  }
 });
 
 app.get('/messages', async (req, res) => {
@@ -433,12 +505,115 @@ app.delete('/api/keywords', (req, res) => {
   });
 });
 
+// ========== GROUP MANAGEMENT API ==========
+
+// 1. Join group by invite link
+app.post('/api/groups/join', async (req, res) => {
+  try {
+    const { invite_link } = req.body;
+    
+    if (!invite_link) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invite link is required' 
+      });
+    }
+    
+    const result = await groupManager.joinGroup(invite_link);
+    res.json(result);
+  } catch (error) {
+    console.error('Join group error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to join group' 
+    });
+  }
+});
+
+// 2. List monitored groups  
+app.get('/api/groups', async (req, res) => {
+  try {
+    const activeOnly = req.query.active !== 'false';
+    const groups = await groupManager.listGroups(activeOnly);
+    res.json({ 
+      success: true, 
+      groups 
+    });
+  } catch (error) {
+    console.error('List groups error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// 3. Leave group
+app.delete('/api/groups/:groupId', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const result = await groupManager.leaveGroup(groupId);
+    res.json(result);
+  } catch (error) {
+    console.error('Leave group error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// 4. Pause/resume group monitoring
+app.patch('/api/groups/:groupId/monitoring', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const { active } = req.body;
+    
+    if (typeof active !== 'boolean') {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Active status is required (boolean)' 
+      });
+    }
+    
+    const result = await groupManager.toggleGroupMonitoring(groupId, active);
+    res.json(result);
+  } catch (error) {
+    console.error('Toggle monitoring error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// 5. Get group statistics
+app.get('/api/groups/:groupId/stats', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const days = parseInt(req.query.days) || 7;
+    
+    const stats = await groupManager.getGroupStats(groupId, days);
+    res.json({ 
+      success: true, 
+      stats 
+    });
+  } catch (error) {
+    console.error('Get group stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
 // ========== SERVER STARTUP ==========
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Backend running on port ${PORT}`);
   console.log(`🌐 Health: https://social-agents-1765342327.fly.dev/health`);
   console.log(`🔑 Keywords API: https://social-agents-1765342327.fly.dev/api/keywords`);
+  console.log(`👥 Groups API: https://social-agents-1765342327.fly.dev/api/groups`);
   
   setTimeout(() => {
     console.log('Auto-starting Telegram...');
