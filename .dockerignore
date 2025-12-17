@@ -1,30 +1,40 @@
-# Exclude EVERYTHING first
-*
+# Ignore common dependencies and environment files
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
-# Then re-include ONLY what we need
-!Dockerfile
-!fly.toml
-!railway-worker.js
-!package.json
-!package-lock.json
-!src/lib/telegram-scraper.js
-!src/lib/tiktok-scraper.js
-!src/lib/puppeteer-config.js
-!src/lib/supabaseClient.js
-!src/lib/sentiment.js
-!src/lib/supabaseClient.ts
-!src/lib/sentiment.ts
-!src/lib/puppeteer-config.ts
+# Ignore Next.js build output
+.next/
+out/
 
-# Exclude all other files
-.git
-node_modules
-.next
-*.log
-*.tar.gz
-*.zip
-public/
-dist/
-coverage/
-tests/
-!telegram-listener.py
+# Ignore debugging files
+*.pem
+*.key
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Ignore your python virtual environment
+/opt/venv
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python

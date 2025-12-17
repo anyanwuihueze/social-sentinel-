@@ -1,14 +1,35 @@
-import os, sys, json, asyncio
+import os, sys, json, asyncio, traceback
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 import aiohttp
 
+# Add comprehensive error logging
+def log_error(msg, exc=None):
+    print(f"[ERROR] {msg}", file=sys.stderr)
+    if exc:
+        traceback.print_exc(file=sys.stderr)
+
+# Validate environment
 API_ID = 36200987
 API_HASH = "062400eb954dcb12839fc4074eb2a1f7"
 SESSION = os.getenv('TELEGRAM_SESSION_STRING', '')
 
-client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
+if not SESSION:
+    log_error("TELEGRAM_SESSION_STRING environment variable is empty or not set")
+    print(json.dumps({'type': 'error', 'msg': 'Missing session string'}), flush=True)
+    sys.exit(1)
 
+print(f"[INFO] Session string length: {len(SESSION)}", file=sys.stderr)
+
+try:
+    client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
+    print("[INFO] TelegramClient created successfully", file=sys.stderr)
+except Exception as e:
+    log_error(f"Failed to create TelegramClient: {e}", e)
+    print(json.dumps({'type': 'error', 'msg': f'Client creation failed: {str(e)}'}), flush=True)
+    sys.exit(1)
+
+# [Rest of your original code remains the same]
 async def update_group_stats(chat_id, stats_data):
     """Update group statistics in the backend"""
     try:
@@ -27,16 +48,16 @@ async def update_group_stats(chat_id, stats_data):
 
 async def main():
     try:
+        print("[INFO] Starting Telegram client...", file=sys.stderr)
         await client.start()
         print(json.dumps({'type': 'ready', 'status': 'connected'}), flush=True)
+        print("[INFO] Telegram client started successfully", file=sys.stderr)
         
         @client.on(events.NewMessage)
         async def handler(event):
-            # Only process group messages
             if event.chat_id >= 0:
-                return  # Skip private chats
+                return
             
-            # Get sender info
             sender_username = None
             try:
                 sender = await event.get_sender()
@@ -54,11 +75,8 @@ async def main():
             }
             print(json.dumps(msg), flush=True)
             
-            # Update group stats for message received
             try:
-                await update_group_stats(str(event.chat_id), {
-                    'messages_received': 1
-                })
+                await update_group_stats(str(event.chat_id), {'messages_received': 1})
             except:
                 pass
         
@@ -81,6 +99,7 @@ async def main():
             stdin_reader()
         )
     except Exception as e:
+        log_error(f"Main loop failed: {e}", e)
         print(json.dumps({'type': 'error', 'msg': str(e)}), flush=True)
         sys.exit(1)
 

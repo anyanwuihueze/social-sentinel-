@@ -17,12 +17,12 @@ class GroupManager {
     return new Promise((resolve, reject) => {
       console.log(`Joining group with invite link: ${inviteLink}`);
       
-      const pythonProcess = spawn('/opt/venv/bin/python3', [
+      const pythonProcess = spawn('python3', [
         path.join(__dirname, 'telegram-utils.py'),
         'join_group',
         inviteLink
       ], {
-        env: { ...process.env, PATH: '/opt/venv/bin:' + process.env.PATH }
+        env: { ...process.env }
       });
 
       let result = '';
@@ -149,12 +149,12 @@ class GroupManager {
     return new Promise((resolve, reject) => {
       console.log(`Leaving group ID: ${groupId}`);
       
-      const pythonProcess = spawn('/opt/venv/bin/python3', [
+      const pythonProcess = spawn('python3', [
         path.join(__dirname, 'telegram-utils.py'),
         'leave_group',
         groupId.toString()
       ], {
-        env: { ...process.env, PATH: '/opt/venv/bin:' + process.env.PATH }
+        env: { ...process.env }
       });
 
       let result = '';

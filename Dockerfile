@@ -52,7 +52,7 @@ RUN npm ci
 # Create and use a virtual environment for Python
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir telethon==1.34.0 cryptography
+RUN pip install --no-cache-dir telethon==1.34.0 cryptography aiohttp
 
 COPY . .
 

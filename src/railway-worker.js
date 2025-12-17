@@ -6,28 +6,17 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Supabase client (using YOUR credentials)
 const supabase = createClient(
   process.env.SUPABASE_URL || 'https://kodyzhrykckevpxejbyd.supabase.co',
   process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
-// Import your intelligent agent and routes
-const IntelligentAgent = require('./backend/services/intelligent-agent');
-const intelligentAgent = new IntelligentAgent();
-const personasRouter = require('./backend/routes/personas');
-
-// Mount persona routes
-app.use('/api', personasRouter);
-
-// Store Telegram bridge process
 let telegramBridge = null;
 let agentConfig = {
-  keywords: ['visa', 'interview', 'appointment', 'embassy', 'denied', 'rejected'],
+  keywords: ['visa', 'interview', 'appointment', 'embassy', 'denied', 'rejected', 'travel', 'funds'],
   persona: 'peer',
   sentimentThreshold: -0.3,
   maxRepliesPerHour: 10,
@@ -38,134 +27,182 @@ let agentConfig = {
   leadsGenerated: 0
 };
 
-// ===== 1. TELEGRAM BRIDGE SETUP =====
 function startTelegramBridge() {
   console.log('🤖 Starting Telegram API bridge...');
   
   telegramBridge = spawn('/opt/venv/bin/python3', ['telegram-listener.py'], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: process.env
+    env: { ...process.env, PATH: '/opt/venv/bin:' + process.env.PATH }
   });
-  
-  // Handle messages from Python
+
   telegramBridge.stdout.on('data', (data) => {
     try {
-      const message = data.toString().trim();
-      if (message) {
-        const event = JSON.parse(message);
-        handleTelegramEvent(event);
-      }
+      const event = JSON.parse(data.toString().trim());
+      handleTelegramEvent(event);
     } catch (error) {
-      console.error('Error parsing Telegram event:', error.message);
+      console.log('[TG]', data.toString());
     }
   });
-  
+
   telegramBridge.stderr.on('data', (data) => {
-    console.error('Telegram Bridge Error:', data.toString());
+    console.error('[TG stderr]', data.toString());
   });
-  
+
   telegramBridge.on('close', (code) => {
-    console.log(`Telegram Bridge exited. Code: ${code}. Restarting in 5s...`);
-    setTimeout(startTelegramBridge, 5000);
+    console.log(`Telegram Bridge exited. Code: ${code}`);
+    telegramBridge = null;
   });
 }
 
-// ===== 2. TELEGRAM EVENT HANDLER =====
 async function handleTelegramEvent(event) {
-  switch (event.type) {
-    case 'ready':
-      console.log('✅ Connected to Telegram!');
-      break;
-      
-    case 'message':
-      await processIncomingMessage(event);
-      break;
-      
-    case 'error':
-      console.error('❌ Telegram error:', event.msg);
-      break;
+  if (event.type === 'ready') {
+    console.log('✅ Connected to Telegram!');
+  }
+  
+  if (event.type === 'message') {
+    await processIncomingMessage(event);
+  }
+  
+  if (event.type === 'error') {
+    console.error('❌ Telegram error:', event.msg);
   }
 }
 
-// ===== 3. MESSAGE PROCESSING WITH INTELLIGENT AGENT =====
-async function processIncomingMessage(message) {
+async function processIncomingMessage(event) {
   agentConfig.totalMessages++;
   
-  const text = (message.text || '').toLowerCase();
+  const text = (event.text || '').toLowerCase();
   const hasKeyword = agentConfig.keywords.some(k => text.includes(k));
   
   if (!hasKeyword) return;
 
-  console.log(`📨 Keyword detected: "${message.text.substring(0, 60)}..."`);
+  console.log(`📨 Keyword detected: "${event.text.substring(0, 60)}..."`);
 
-  // Save to Supabase
-  await saveMessage(message);
+  await saveMessage(event);
 
-  // Analyze sentiment
-  const sentimentScore = analyzeSentiment(message.text);
+  const sentimentScore = analyzeSentiment(event.text);
   
-  // Only reply if frustrated or needs help
   if (sentimentScore > agentConfig.sentimentThreshold) {
     console.log(`⏭️ Skipped (sentiment ${sentimentScore} > ${agentConfig.sentimentThreshold})`);
     return;
   }
 
-  // Rate limiting
   if (agentConfig.replyCount >= agentConfig.maxRepliesPerHour) {
     console.log('⏸️ Rate limit reached');
     return;
   }
 
-  // Use intelligent agent to generate reply
-  try {
-    const aiReply = await intelligentAgent.generateIntelligentReply({
-      message: message.text,
-      persona: { name: agentConfig.persona, persona_type: agentConfig.persona },
-      context: [],
-      knowledge: [],
-      language: { region: 'US', style: 'formal', use_slang: false }
-    });
-    
-    // Send reply
-    sendTelegramMessage(message.chat_id, aiReply.text);
-    
-    // Save reply
-    await saveReply(message, aiReply.text, sentimentScore);
-    
-    agentConfig.replyCount++;
-    agentConfig.totalReplies++;
-    
-    console.log(`🤖 ${agentConfig.persona} replied: ${aiReply.text.substring(0, 50)}...`);
-  } catch (error) {
-    console.error('AI reply failed:', error);
+  const isLead = isHighIntentLead(event.text, sentimentScore);
+  if (isLead) {
+    await saveLead(event, sentimentScore);
+    agentConfig.leadsGenerated++;
   }
-}
 
-// ===== 4. HELPER FUNCTIONS =====
-function sendTelegramMessage(chatId, text) {
-  if (!telegramBridge || !telegramBridge.stdin.writable) return false;
+  const reply = await generateAIReply(event.text, agentConfig.persona);
   
-  const cmd = JSON.stringify({
-    action: 'send',
-    chat_id: chatId,
-    text: text
-  });
+  sendTelegramMessage(event.chat_id, reply);
   
-  telegramBridge.stdin.write(cmd + '\n');
-  return true;
+  await saveReply(event, reply, sentimentScore);
+  
+  agentConfig.replyCount++;
+  agentConfig.totalReplies++;
+  
+  setTimeout(() => {
+    agentConfig.replyCount = Math.max(0, agentConfig.replyCount - 1);
+  }, 60 * 60 * 1000);
 }
 
 function analyzeSentiment(text) {
-  const negativeWords = ['denied', 'rejected', 'frustrated', 'confused', 'stuck', 'failed'];
-  const positiveWords = ['approved', 'success', 'thanks', 'helpful'];
+  const negativeWords = ['denied', 'rejected', 'frustrated', 'confused', 'stuck', 'failed', 'help', 'problem', 'issue', 'difficult', 'hard'];
+  const positiveWords = ['approved', 'success', 'got it', 'thanks', 'helpful', 'great'];
   
   let score = 0;
   const lower = text.toLowerCase();
   
-  negativeWords.forEach(word => { if (lower.includes(word)) score -= 0.2; });
-  positiveWords.forEach(word => { if (lower.includes(word)) score += 0.2; });
+  negativeWords.forEach(word => {
+    if (lower.includes(word)) score -= 0.2;
+  });
+  
+  positiveWords.forEach(word => {
+    if (lower.includes(word)) score += 0.2;
+  });
   
   return Math.max(-1, Math.min(1, score));
+}
+
+function isHighIntentLead(text, sentiment) {
+  const highIntentPhrases = [
+    'need help', 'looking for', 'anyone know', 'how to', 'what should', 
+    'consultant', 'advice', 'guide', 'lawyer', 'agent'
+  ];
+  
+  const lower = text.toLowerCase();
+  const hasIntent = highIntentPhrases.some(phrase => lower.includes(phrase));
+  const isFrustrated = sentiment < -0.4;
+  
+  return hasIntent || isFrustrated;
+}
+
+async function generateAIReply(messageText, persona) {
+  if (!agentConfig.aiEnabled || !process.env.GEMINI_API_KEY) {
+    return getFallbackReply(persona);
+  }
+
+  const personaPrompts = {
+    peer: `You're a regular person who successfully got their visa last year. You're chatting casually in a Telegram group about visa processes. Be friendly, use lowercase sometimes, throw in an emoji occasionally (not every message), and share personal experience. Don't sound like a consultant or bot.
+
+Someone said: "${messageText}"
+
+Reply naturally in 2-3 sentences like you're texting a friend. At the end, subtly mention "btw there's this helpful site I used for document prep" without being pushy. Make it conversational, not salesy.`,
+
+    expert: `You're an experienced immigration consultant who's helped hundreds get visas. You're professional but approachable. Someone in a Telegram group said: "${messageText}"
+
+Provide helpful, specific advice in 2-3 sentences. At the end, mention "If you need detailed guidance, check out [your service]" in a professional way.`,
+
+    friendly: `You're a super friendly person who loves helping others with visa processes. You're enthusiastic and supportive. Someone said: "${messageText}"
+
+Respond warmly and encouragingly in 2-3 sentences, then softly suggest they check out your visa help service if they need more support.`
+  };
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{ text: personaPrompts[persona] || personaPrompts.peer }]
+          }],
+          generationConfig: {
+            temperature: 0.9,
+            maxOutputTokens: 200
+          }
+        })
+      }
+    );
+
+    const data = await response.json();
+    const aiReply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    
+    if (aiReply) {
+      console.log('🤖 AI reply generated');
+      return aiReply.trim();
+    }
+  } catch (error) {
+    console.error('AI generation failed:', error.message);
+  }
+
+  return getFallbackReply(persona);
+}
+
+function getFallbackReply(persona) {
+  const replies = {
+    peer: "hey i went through this exact same thing last year! it was so stressful lol. what part are you stuck on? also i used this site for document prep that really helped if you wanna check it out",
+    expert: "I understand your concern. Based on your situation, I'd recommend focusing on your supporting documents first. Feel free to reach out if you need professional guidance with your application.",
+    friendly: "Oh I totally feel you! The visa process can be so overwhelming 😅 But don't worry, you got this! Let me know if you have specific questions, or check out some resources that might help!"
+  };
+  
+  return replies[persona] || replies.peer;
 }
 
 async function saveMessage(event) {
@@ -176,10 +213,28 @@ async function saveMessage(event) {
       sender_username: event.sender_username || null,
       message_text: event.text,
       message_date: event.date,
-      has_keyword: true
+      has_keyword: true,
+      is_group: event.chat_id < 0
     });
   } catch (error) {
     console.error('Failed to save message:', error.message);
+  }
+}
+
+async function saveLead(event, sentiment) {
+  try {
+    await supabase.from('telegram_leads').insert({
+      chat_id: event.chat_id.toString(),
+      sender_id: event.sender_id.toString(),
+      sender_username: event.sender_username || null,
+      message_text: event.text,
+      sentiment_score: sentiment,
+      lead_score: sentiment < -0.6 ? 'hot' : sentiment < -0.3 ? 'warm' : 'cold',
+      is_group: event.chat_id < 0
+    });
+    console.log('💡 Lead saved!');
+  } catch (error) {
+    console.error('Failed to save lead:', error.message);
   }
 }
 
@@ -190,14 +245,21 @@ async function saveReply(event, replyText, sentiment) {
       original_message: event.text,
       reply_text: replyText,
       persona: agentConfig.persona,
-      sentiment_score: sentiment
+      sentiment_score: sentiment,
+      is_group: event.chat_id < 0
     });
   } catch (error) {
     console.error('Failed to save reply:', error.message);
   }
 }
 
-// ===== 5. EXPRESS ENDPOINTS (Your existing + new) =====
+function sendTelegramMessage(chatId, text) {
+  if (!telegramBridge) return;
+  const cmd = JSON.stringify({ action: 'send', chat_id: chatId, text: text });
+  telegramBridge.stdin.write(cmd + '\n');
+}
+
+// ========== API ENDPOINTS ==========
 
 // Health check
 app.get('/health', (req, res) => {
@@ -210,13 +272,15 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Start agent
+// Start/Stop
 app.get('/start', (req, res) => {
+  if (telegramBridge) {
+    return res.json({ success: false, message: 'Already running', status: 'connected' });
+  }
   startTelegramBridge();
-  res.json({ success: true, message: 'Agent started' });
+  res.json({ success: true, message: 'Starting agent', status: 'connecting' });
 });
 
-// Stop agent
 app.get('/stop', (req, res) => {
   if (telegramBridge) {
     telegramBridge.kill();
@@ -225,7 +289,7 @@ app.get('/stop', (req, res) => {
   res.json({ success: true, message: 'Agent stopped' });
 });
 
-// Config endpoints (your existing)
+// Config
 app.post('/config', (req, res) => {
   if (req.body.keywords) agentConfig.keywords = req.body.keywords;
   if (req.body.persona) agentConfig.persona = req.body.persona;
@@ -233,6 +297,7 @@ app.post('/config', (req, res) => {
   if (req.body.maxReplies) agentConfig.maxRepliesPerHour = req.body.maxReplies;
   if (req.body.aiEnabled !== undefined) agentConfig.aiEnabled = req.body.aiEnabled;
   
+  console.log('✅ Config updated:', agentConfig);
   res.json({ success: true, config: agentConfig });
 });
 
@@ -241,40 +306,46 @@ app.get('/config', (req, res) => {
 });
 
 // Stats
-app.get('/stats', (req, res) => {
-  res.json({
-    success: true,
-    stats: {
-      status: telegramBridge ? 'connected' : 'stopped',
-      totalMessages: agentConfig.totalMessages,
-      totalReplies: agentConfig.totalReplies,
-      leadsGenerated: agentConfig.leadsGenerated,
-      repliesThisHour: agentConfig.replyCount,
-      maxReplies: agentConfig.maxRepliesPerHour,
-      persona: agentConfig.persona,
-      aiEnabled: agentConfig.aiEnabled
-    }
-  });
-});
-
-// Test AI
-app.post('/test-ai', async (req, res) => {
-  const { text, persona } = req.body;
+app.get('/stats', async (req, res) => {
   try {
-    const aiReply = await intelligentAgent.generateIntelligentReply({
-      message: text,
-      persona: { name: persona || agentConfig.persona, persona_type: persona || agentConfig.persona },
-      context: [],
-      knowledge: [],
-      language: { region: 'US', style: 'formal', use_slang: false }
+    const { count: groupCount } = await supabase
+      .from('monitored_groups')
+      .select('*', { count: 'exact', head: true })
+      .eq('active', true);
+    
+    res.json({
+      success: true,
+      stats: {
+        status: telegramBridge ? 'connected' : 'stopped',
+        totalMessages: agentConfig.totalMessages,
+        totalReplies: agentConfig.totalReplies,
+        leadsGenerated: agentConfig.leadsGenerated,
+        repliesThisHour: agentConfig.replyCount,
+        maxReplies: agentConfig.maxRepliesPerHour,
+        persona: agentConfig.persona,
+        aiEnabled: agentConfig.aiEnabled,
+        activeGroups: groupCount || 0
+      }
     });
-    res.json({ success: true, reply: aiReply.text });
   } catch (error) {
-    res.json({ success: false, error: error.message });
+    res.json({
+      success: true,
+      stats: {
+        status: telegramBridge ? 'connected' : 'stopped',
+        totalMessages: agentConfig.totalMessages,
+        totalReplies: agentConfig.totalReplies,
+        leadsGenerated: agentConfig.leadsGenerated,
+        repliesThisHour: agentConfig.replyCount,
+        maxReplies: agentConfig.maxRepliesPerHour,
+        persona: agentConfig.persona,
+        aiEnabled: agentConfig.aiEnabled,
+        activeGroups: 'N/A'
+      }
+    });
   }
 });
 
-// Messages endpoint
+// Messages
 app.get('/messages', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
@@ -291,18 +362,154 @@ app.get('/messages', async (req, res) => {
   }
 });
 
-// ===== 6. SERVER STARTUP =====
+// Leads
+app.get('/leads', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('telegram_leads')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+    
+    if (error) throw error;
+    res.json({ success: true, leads: data });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Test AI
+app.post('/test-ai', async (req, res) => {
+  const { text, persona } = req.body;
+  const reply = await generateAIReply(text, persona || agentConfig.persona);
+  res.json({ success: true, reply });
+});
+
+// Keywords API
+app.get('/api/keywords', (req, res) => {
+  res.json({
+    success: true,
+    keywords: agentConfig.keywords,
+    count: agentConfig.keywords.length
+  });
+});
+
+app.post('/api/keywords', (req, res) => {
+  const { keyword } = req.body;
+  
+  if (!keyword || typeof keyword !== 'string') {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Keyword must be a non-empty string' 
+    });
+  }
+  
+  const normalizedKeyword = keyword.toLowerCase().trim();
+  
+  if (!agentConfig.keywords.includes(normalizedKeyword)) {
+    agentConfig.keywords.push(normalizedKeyword);
+    console.log(`✅ Keyword added: "${normalizedKeyword}"`);
+  }
+  
+  res.json({
+    success: true,
+    keyword: normalizedKeyword,
+    keywords: agentConfig.keywords,
+    message: `Keyword "${normalizedKeyword}" added successfully`
+  });
+});
+
+app.delete('/api/keywords/:keyword', (req, res) => {
+  const keyword = req.params.keyword.toLowerCase();
+  
+  const index = agentConfig.keywords.indexOf(keyword);
+  if (index > -1) {
+    agentConfig.keywords.splice(index, 1);
+    console.log(`🗑️ Keyword removed: "${keyword}"`);
+    
+    res.json({
+      success: true,
+      keyword: keyword,
+      keywords: agentConfig.keywords,
+      message: `Keyword "${keyword}" removed successfully`
+    });
+  } else {
+    res.status(404).json({
+      success: false,
+      error: `Keyword "${keyword}" not found`
+    });
+  }
+});
+
+app.delete('/api/keywords', (req, res) => {
+  const oldCount = agentConfig.keywords.length;
+  agentConfig.keywords = ['visa'];
+  console.log(`🧹 Cleared ${oldCount - 1} keywords, kept default "visa"`);
+  
+  res.json({
+    success: true,
+    keywords: agentConfig.keywords,
+    message: 'Cleared all keywords, kept default "visa"'
+  });
+});
+
+// ========== GROUP MANAGEMENT API ==========
+
+// 1. Join group by invite link
+app.post('/api/groups/join', async (req, res) => {
+  try {
+    const { invite_link } = req.body;
+    
+    if (!invite_link) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invite link is required' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Join group endpoint ready - groups feature coming soon',
+      invite_link: invite_link
+    });
+  } catch (error) {
+    console.error('Join group error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to join group' 
+    });
+  }
+});
+
+// 2. List monitored groups  
+app.get('/api/groups', async (req, res) => {
+  try {
+    res.json({ 
+      success: true, 
+      groups: [],
+      message: 'Groups feature coming soon'
+    });
+  } catch (error) {
+    console.error('List groups error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// PROXY TEST ENDPOINT (For your frontend)
+app.get('/api/proxy-test', (req, res) => {
+  res.json({ status: 'connected' });
+});
+
+// ========== SERVER STARTUP ==========
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Backend running on port ${PORT}`);
   console.log(`🌐 Health: https://social-agents-1765342327.fly.dev/health`);
-  console.log(`🎭 Personas API: https://social-agents-1765342327.fly.dev/api/personas`);
+  console.log(`🔑 Keywords API: https://social-agents-1765342327.fly.dev/api/keywords`);
+  console.log(`👥 Groups API: https://social-agents-1765342327.fly.dev/api/groups`);
   
-  // Initialize intelligent agent
-  intelligentAgent.initialize().then(count => {
-    console.log(`🧠 Intelligent agent initialized with ${count} personas`);
-  });
-  
-  // Auto-start Telegram bridge
   setTimeout(() => {
     console.log('Auto-starting Telegram...');
     startTelegramBridge();

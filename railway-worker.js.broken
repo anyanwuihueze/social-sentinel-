@@ -2,7 +2,6 @@ const express = require('express');
 const { spawn } = require('child_process');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
-const GroupManager = require('./group-manager');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -29,6 +28,7 @@ let agentConfig = {
 };
 
 // Group Manager
+const GroupManager = require('./group-manager');
 const groupManager = new GroupManager();
 
 function startTelegramBridge() {
@@ -296,7 +296,7 @@ app.get('/stop', (req, res) => {
 // Config
 app.post('/config', (req, res) => {
   if (req.body.keywords) agentConfig.keywords = req.body.keywords;
-  if (req.body.persona) agentConfig.persona = req.body.persona;
+  if (req.body.persona) agentConfig.persona = reqConfig.persona;
   if (req.body.sentimentThreshold !== undefined) agentConfig.sentimentThreshold = req.body.sentimentThreshold;
   if (req.body.maxReplies) agentConfig.maxRepliesPerHour = req.body.maxReplies;
   if (req.body.aiEnabled !== undefined) agentConfig.aiEnabled = req.body.aiEnabled;
